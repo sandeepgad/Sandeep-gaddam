@@ -1,4 +1,4 @@
-name: RICH LINUX (SMART GNOME) - FIXED
+name: RICH LINUX (GNOME FIXED) - FINAL
 
 on:
   workflow_dispatch:
@@ -15,81 +15,60 @@ jobs:
           chmod +x /tmp/cloudflared
           sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
 
-      - name: Smart GNOME Install (No Bloat)
+      - name: Smart GNOME Install
         run: |
           sudo apt-get update
-          
-          # Remove heavy tools that cause hangs
-          sudo apt-get remove -y --purge man-db firewalld ufw || true
-          
-          # Install ONLY the GUI parts of GNOME (Skipping Kernel/System updates)
-          # Using --no-install-recommends to speed up drastically
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             gnome-session gnome-shell gnome-terminal nautilus \
-            dbus-x11 x11-xserver-utils xorg \
+            dbus-x11 x11-xserver-utils xorg xrdp \
             adwaita-icon-theme-full fonts-cantarell
           
-          echo "✅ GUI Installed (Lightweight Mode)"
-
-      - name: Install XRDP (Remote Desktop)
-        run: |
-          sudo apt-get install -y --no-install-recommends xrdp
-          sudo adduser xrdp ssl-cert
-          
-          # Configure XRDP to use GNOME
-          echo "gnome-session" > ~/.xsession
-          sudo sed -i 's/3389/3389/g' /etc/xrdp/xrdp.ini
-          sudo systemctl enable xrdp
-          sudo service xrdp start
-
-      - name: Install VS Code & Antigravity (Chrome)
-        run: |
-          # VS Code
-          wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > packages.microsoft.gpg
-          sudo install -D -o root -g root -m 644 packages.microsoft.gpg /etc/apt/keyrings/packages.microsoft.gpg
-          echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" | sudo tee /etc/apt/sources.list.d/vscode.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y code
-
-          # Chrome (for Antigravity)
-          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo apt install -y ./google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
-
-          # Desktop Shortcut
-          mkdir -p ~/Desktop
-          cat > ~/Desktop/Antigravity.desktop <<EOF
-          [Desktop Entry]
-          Version=1.0
-          Name=Google Antigravity
-          Exec=google-chrome --app=https://antigravity.google/ --no-sandbox
-          Icon=google-chrome
-          Type=Application
+          # 🛑 CRITICAL FIX: Disable Color Management Popup that causes black screen
+          sudo bash -c "cat > /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla" <<EOF
+          [Allow Colord]
+          Identity=unix-user:*
+          Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
+          ResultAny=no
+          ResultInactive=no
+          ResultActive=yes
           EOF
-          chmod +x ~/Desktop/Antigravity.desktop
 
-      - name: Setup User (runner)
+      - name: Configure XRDP & User
         run: |
           sudo useradd -m -s /bin/bash runner || true
           echo "runner:Antigravity2026!" | sudo chpasswd
           sudo usermod -aG sudo runner
+          
+          # Fix XRDP session for GNOME
+          echo "export GNOME_SHELL_SESSION_MODE=ubuntu" > /home/runner/.xsessionrc
+          echo "export XDG_CURRENT_DESKTOP=ubuntu:GNOME" >> /home/runner/.xsessionrc
+          echo "export XDG_SESSION_TYPE=x11" >> /home/runner/.xsessionrc
+          echo "exec dbus-launch --exit-with-session gnome-session" > /home/runner/.xsession
+          
+          sudo chown runner:runner /home/runner/.xsession /home/runner/.xsessionrc
+          sudo adduser xrdp ssl-cert
+          sudo systemctl restart xrdp
 
-      - name: Start Cloudflare Tunnel (RDP)
+      - name: Install VS Code & Chrome
+        run: |
+          wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > packages.microsoft.gpg
+          sudo install -D -o root -g root -m 644 packages.microsoft.gpg /etc/apt/keyrings/packages.microsoft.gpg
+          echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" | sudo tee /etc/apt/sources.list.d/vscode.list > /dev/null
+          sudo apt-get update && sudo apt-get install -y code
+          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt install -y ./google-chrome-stable_current_amd64.deb
+
+      - name: Start Tunnel
         run: |
           /usr/local/bin/cloudflared tunnel --url tcp://localhost:3389 > tunnel.log 2>&1 &
-          
-          echo "Waiting for URL..."
-          for i in {1..30}; do
-            sleep 2
-            TUN=$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' tunnel.log | head -1)
-            if [ -n "$TUN" ]; then echo "🌐 Tunnel: $TUN"; break; fi
-          done
+          sleep 10
+          TUN=$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' tunnel.log | head -1)
+          echo "🌐 URL: $TUN"
           echo "$TUN" > tunnel_url.txt
 
-      - name: SHOW CONNECT INFO
+      - name: Show Info
         run: |
           TUN=$(cat tunnel_url.txt)
-          echo "==================================================="
-          echo "   RICH GNOME DESKTOP READY (Smart Version)"
           echo "==================================================="
           echo "Command: cloudflared access tcp --hostname ${TUN#https://} --url localhost:3389"
           echo "User   : runner"
