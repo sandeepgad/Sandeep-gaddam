@@ -1,42 +1,100 @@
-name: CI
+name: RICH LINUX (SMART GNOME) - FIXED
 
-on: [push, workflow_dispatch]
+on:
+  workflow_dispatch:
 
 jobs:
-
   build:
-
-    runs-on: windows-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
 
     steps:
+      - name: Install Cloudflared
+        run: |
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+          sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
 
-    - name: Download
+      - name: Smart GNOME Install (No Bloat)
+        run: |
+          sudo apt-get update
+          
+          # Remove heavy tools that cause hangs
+          sudo apt-get remove -y --purge man-db firewalld ufw || true
+          
+          # Install ONLY the GUI parts of GNOME (Skipping Kernel/System updates)
+          # Using --no-install-recommends to speed up drastically
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            gnome-session gnome-shell gnome-terminal nautilus \
+            dbus-x11 x11-xserver-utils xorg \
+            adwaita-icon-theme-full fonts-cantarell
+          
+          echo "✅ GUI Installed (Lightweight Mode)"
 
-      run: Invoke-WebRequest https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-windows-amd64.zip -OutFile ngrok.zip
+      - name: Install XRDP (Remote Desktop)
+        run: |
+          sudo apt-get install -y --no-install-recommends xrdp
+          sudo adduser xrdp ssl-cert
+          
+          # Configure XRDP to use GNOME
+          echo "gnome-session" > ~/.xsession
+          sudo sed -i 's/3389/3389/g' /etc/xrdp/xrdp.ini
+          sudo systemctl enable xrdp
+          sudo service xrdp start
 
-    - name: Extract
+      - name: Install VS Code & Antigravity (Chrome)
+        run: |
+          # VS Code
+          wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > packages.microsoft.gpg
+          sudo install -D -o root -g root -m 644 packages.microsoft.gpg /etc/apt/keyrings/packages.microsoft.gpg
+          echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" | sudo tee /etc/apt/sources.list.d/vscode.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y code
 
-      run: Expand-Archive ngrok.zip
+          # Chrome (for Antigravity)
+          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt install -y ./google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
 
-    - name: Auth
+          # Desktop Shortcut
+          mkdir -p ~/Desktop
+          cat > ~/Desktop/Antigravity.desktop <<EOF
+          [Desktop Entry]
+          Version=1.0
+          Name=Google Antigravity
+          Exec=google-chrome --app=https://antigravity.google/ --no-sandbox
+          Icon=google-chrome
+          Type=Application
+          EOF
+          chmod +x ~/Desktop/Antigravity.desktop
 
-      run: .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
+      - name: Setup User (runner)
+        run: |
+          sudo useradd -m -s /bin/bash runner || true
+          echo "runner:Antigravity2026!" | sudo chpasswd
+          sudo usermod -aG sudo runner
 
-      env:
+      - name: Start Cloudflare Tunnel (RDP)
+        run: |
+          /usr/local/bin/cloudflared tunnel --url tcp://localhost:3389 > tunnel.log 2>&1 &
+          
+          echo "Waiting for URL..."
+          for i in {1..30}; do
+            sleep 2
+            TUN=$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' tunnel.log | head -1)
+            if [ -n "$TUN" ]; then echo "🌐 Tunnel: $TUN"; break; fi
+          done
+          echo "$TUN" > tunnel_url.txt
 
-        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+      - name: SHOW CONNECT INFO
+        run: |
+          TUN=$(cat tunnel_url.txt)
+          echo "==================================================="
+          echo "   RICH GNOME DESKTOP READY (Smart Version)"
+          echo "==================================================="
+          echo "Command: cloudflared access tcp --hostname ${TUN#https://} --url localhost:3389"
+          echo "User   : runner"
+          echo "Pass   : Antigravity2026!"
+          echo "==================================================="
 
-    - name: Enable TS
-
-      run: Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
-
-    - run: Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-
-    - run: Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-
-    - run: Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd!" -Force)
-
-    - name: Create Tunnel
-
-      run: .\ngrok\ngrok.exe tcp 3389
-
+      - name: Keep Alive
+        run: sleep 21600
